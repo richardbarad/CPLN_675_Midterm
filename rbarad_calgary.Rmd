@@ -132,23 +132,23 @@ rm(grid_perm_int)
 Summarize land cover data by grid square and figure out the mode land cover class for each grid square
 
 ```{r}
-
+#Need for land cover tiles to cover all of Calgary
 land_cover1 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W114_Map.tif')
 land_cover2 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W117_Map.tif')
 land_cover3 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N51W114_Map.tif')
 land_cover4 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N51W117_Map.tif')
 
-calgary_land_cover <- terra::merge(land_cover1,land_cover2,land_cover3,land_cover4) #Merge together all tiles that overlap Calgary
+calgary_land_cover <- terra::merge(land_cover1,land_cover2,land_cover3,land_cover4) #Merge together all land cover rasters that overlap Calgary
 
 calgary_land_cover2 <- crop(calgary_land_cover, calgary_boundary %>% st_transform('EPSG:4326')) #Crop Raster to Calgary
 
-grid5 <- grid4 %>% st_transform('EPSG:4326') #Project grid so that I do not have to project the raster
+grid5 <- grid4 %>% st_transform('EPSG:4326') #Project grid into WGS1984 so that I do not have to project the raster
 
 mode <- function(class){
   which.max(tabulate(class))
 }
 
-# Extract raster values within each polygon
+# Extract raster values within each polygon and determine the most common raster value
 land_cover_values <- extract(calgary_land_cover2, grid5) %>%
   rename(landcover = ESA_WorldCover_10m_2020_v100_N48W114_Map) %>%
   group_by(ID) %>% summarise(landcover_mode = mode(landcover)) %>%
@@ -160,8 +160,6 @@ grid6 <- cbind(grid5,land_cover_values) %>%
   mutate(landcover_mode = as.factor(landcover_mode))
 
 ```
-
-
 Distance to Water - Used some code from PPA.
 
 ```{r}
@@ -176,3 +174,4 @@ nearest_feat <- st_nearest_feature(centroid,water)
 grid6$water_dist <- as.double(st_distance(centroid, water[nearest_feat,], by_element=TRUE))
 
 ```
+
