@@ -132,7 +132,7 @@ rm(grid_perm_int)
 Summarize land cover data by grid square and figure out the mode land cover class for each grid square
 
 ```{r}
-#Need for land cover tiles to cover all of Calgary
+#Need four land cover tiles to cover all of Calgary
 land_cover1 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W114_Map.tif')
 land_cover2 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W117_Map.tif')
 land_cover3 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N51W114_Map.tif')
