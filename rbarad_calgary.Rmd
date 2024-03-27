@@ -23,7 +23,7 @@ library(gridExtra)
 
 # Data Setup for Calgary
 
-Read Data for Calgary
+##Read Data for Calgary
 
 ```{r read_files, echo=FALSE}
 
@@ -108,28 +108,6 @@ grid3 <- cbind(grid2,elevation_extract %>% select(elevation))
 
 ```
 
-Get Percent impermeable surface for each grid square. Prior to running this I repaired the geometries in ArcGIS Pro as reparing geometries in R was extremely slow.
-
-```{r}
-
-permiable <- st_read('Data/calgary/local_land_Cover/landcover.shp') %>%
-  filter(ldscmetric != 'Impermable') %>%
-  st_transform('EPSG:3780')
-
-grid_perm_int <- st_intersection(grid3,permiable)
-
-grid_perm_int <- grid_perm_int %>%
-  mutate(area = round(as.numeric(st_area(grid_perm_int)),2)) %>%
-  st_drop_geometry() %>%
-  group_by(ID) %>% summarise(perm_area = sum(area))
-
-grid4 <- left_join(grid3,grid_perm_int,by='ID') %>%
-  mutate(perm_area = replace_na(perm_area,0),
-         pct_perm = round(perm_area/as.numeric(st_area(.))*100,2)) %>%
-  select(-perm_area)
-
-rm(grid_perm_int)
-```
 
 Summarize land cover data by grid square and figure out the mode land cover class for each grid square
 
@@ -144,20 +122,20 @@ calgary_land_cover <- terra::merge(land_cover1,land_cover2,land_cover3,land_cove
 
 calgary_land_cover2 <- crop(calgary_land_cover, calgary_boundary %>% st_transform('EPSG:4326')) #Crop Raster to Calgary
 
-grid5 <- grid4 %>% st_transform('EPSG:4326') #Project grid into WGS1984 so that I do not have to project the raster
+grid4 <- grid3 %>% st_transform('EPSG:4326') #Project grid into WGS1984 so that I do not have to project the raster
 
 mode <- function(class){
   which.max(tabulate(class))
 }
 
 # Extract raster values within each polygon and determine the most common raster value
-land_cover_values <- extract(calgary_land_cover2, grid5) %>%
+land_cover_values <- extract(calgary_land_cover2, grid4) %>%
   rename(landcover = ESA_WorldCover_10m_2020_v100_N48W114_Map) %>%
   group_by(ID) %>% summarise(landcover_mode = mode(landcover)) %>%
   ungroup() %>%
   select(landcover_mode)
 
-grid6 <- cbind(grid5,land_cover_values) %>% 
+grid5 <- cbind(grid4,land_cover_values) %>% 
   st_transform('EPSG:3780') %>%
   mutate(landcover_mode = as.factor(landcover_mode))
 
@@ -169,25 +147,64 @@ Distance to Water - Used some code from PPA.
 
 water <- st_read('Data/calgary/Hydrology_20240320.geojson') %>% st_transform('EPSG:3780')
 
-centroid <- grid6 %>%
+centroid <- grid5 %>%
   st_centroid()
 
 nearest_feat <- st_nearest_feature(centroid,water)
 
-grid6$water_dist <- as.double(st_distance(centroid, water[nearest_feat,], by_element=TRUE))
+grid5$water_dist <- as.double(st_distance(centroid, water[nearest_feat,], by_element=TRUE))
 
 ```
+
+Calculate slope and summarize slope by grid square - use max slope in each grid square.
 
 ```{r cal_slope}
-calgary_boundary <- st_read('Data/calgary/CALGIS_CITYBOUND_LIMIT/CALGIS_CITYBOUND_LIMIT.shp') %>% st_transform('EPSG:3780')
 
-cal_dem <- raster('Data/calgary/calgarydem/w001001.adf') %>%
-  projectRaster(cal_dem, crs = 'EPSG:3780')
+calgary_slope <- terrain(dem, v="slope", neighbors=8, unit="degrees")  
 
+slope_extract <- terra::extract(calgary_slope,grid5, fun='max', na.rm=TRUE) %>%
+  rename(slope_max = slope) 
 
+grid6 <- cbind(grid5,slope_extract %>% select(slope_max))
 
-calgary_slope <- terrain(cal_dem, v="slope", neighbors=8, unit="degrees")  
-
-plot(calgary_slope)
 ```
 
+Summarize flow accumulation by grid square - use max flow accumulation by grid square. 
+
+```{r cal_fa}
+
+calgary_fa <- rast('Data/calgary/calgary_flowaccumilation.tif') 
+
+calgary_fa <- project(calgary_fa,'EPSG:3780')
+
+fa_extract <- terra::extract(calgary_fa,grid6, fun='max', na.rm=TRUE) %>%
+  rename(fa_max = calgary_flowaccumilation) 
+
+grid7 <- cbind(grid6,fa_extract %>% select(fa_max))
+
+grid7$fa_log <- log(grid7$fa_max + 1)
+
+```
+
+
+``` {r make_maps,fig.width=14,fig.height=10}
+
+create_map <- function(variable,title,color_scale,legend_label){
+  ggplot()+
+    geom_sf(data=grid7,aes(fill={{variable}}),color='transparent')+
+    scale_fill_viridis(option=color_scale,name=legend_label)+
+    ggtitle(title)+
+    theme_void()
+}
+
+m1 <- create_map(elevation,'Elevation Above Minimum City Elevation (meters)','rocket','elevation (meters')
+
+m2 <- create_map(water_dist,'Distance to Water (meters)','plasma','distance (meters)')
+
+m3 <- create_map(slope_max,'Slope','magma','Slope')
+
+m4 <- create_map(fa_log,'Flow Accumilation (Natural Log)','cividis','Number of Pixels')
+
+grid.arrange(m1,m2,m3,m4)
+
+```
