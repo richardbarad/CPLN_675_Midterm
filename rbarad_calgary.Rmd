@@ -32,6 +32,7 @@ calgary_boundary <- st_read('Data/calgary/CALGIS_CITYBOUND_LIMIT/CALGIS_CITYBOUN
 inundation <- rast('Data/calgary/inundation/w001001.adf')
 
 ```
+
 Make Grid
 
 ```{r}
@@ -129,6 +130,7 @@ grid4 <- left_join(grid3,grid_perm_int,by='ID') %>%
 
 rm(grid_perm_int)
 ```
+
 Summarize land cover data by grid square and figure out the mode land cover class for each grid square
 
 ```{r}
@@ -160,6 +162,7 @@ grid6 <- cbind(grid5,land_cover_values) %>%
   mutate(landcover_mode = as.factor(landcover_mode))
 
 ```
+
 Distance to Water - Used some code from PPA.
 
 ```{r}
