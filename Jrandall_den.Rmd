@@ -1,0 +1,196 @@
+---
+title: "midterm"
+author: "Jarred_Randall"
+date: "2024-03-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Library}
+
+library(raster) 
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(dplyr)
+library(raster) 
+library(dplyr)
+library(tidyr)
+library(readr)
+library(sf)
+library(terra)
+library(kableExtra)
+library(terra)
+library(exactextractr)
+library(tigris)
+library(viridis)
+library(gridExtra)
+
+
+```
+
+
+# Denver slope
+```{r denver_slope}
+
+dem_1 <- rast("Data/denver/n39_w105_1arc_v3.tif")
+
+dem_2 <- rast("Data/denver/n39_w106_1arc_v32.tif")
+
+merg_dem <- terra::merge(dem_1,dem_2)
+
+merg_dem <- project(merg_dem, "EPSG:6427")
+
+
+denver_bound <-
+  st_read("Data/denver/county_boundary") %>%
+  st_transform(crs = "EPSG:6427")
+ 
+
+dem_crop <- crop(merg_dem, denver_bound)
+# 'mask' out the values outside denver
+denver_dem <- mask(dem_crop, denver_bound)
+
+
+denver_slope <- terrain(denver_dem, v="slope", neighbors=8, unit="degrees")  
+
+plot(denver_slope)
+
+hist(denver_slope)
+
+writeRaster(merg_dem, "Denver_Dem.tif", overwrite=FALSE)
+```
+
+# Dist to Waterbody
+
+
+
+
+## Calgary Slope
+
+```{r cal_slope}
+calgary_boundary <- st_read('Data/calgary/CALGIS_CITYBOUND_LIMIT/CALGIS_CITYBOUND_LIMIT.shp') %>% st_transform('EPSG:3780')
+
+cal_dem <- raster('Data/calgary/calgarydem/w001001.adf') %>%
+  projectRaster(cal_dem, crs = 'EPSG:3780')
+
+
+
+calgary_slope <- terrain(cal_dem, v="slope", neighbors=8, unit="degrees")  
+
+plot(calgary_slope)
+```
+
+
+#Denver Grid
+
+
+Make Grid
+
+```{r}
+
+grid_den <- st_make_grid(denver_bound,100,square=TRUE) %>%
+  st_sf() %>%
+  mutate(ID = row_number())
+
+# Get just grid squares with centroid in Calgary city limits
+
+grid_den <- grid_den %>%
+  st_centroid() %>%
+  st_join(.,denver_bound,join = st_intersects,left=FALSE) %>%
+  st_drop_geometry() %>%
+  left_join(.,grid_den,by='ID') %>%
+  st_as_sf() %>%
+  mutate(ID = row_number()) %>%
+  select(ID)
+
+```
+
+
+# Engineer Predictor Features for Calgary
+
+Get zonal statistics for grid squares, calculate mean elevation for each.
+
+```{r}
+
+colnames(elevation_extract)
+
+
+elevation_extract <- terra::extract(merg_dem,grid_den, fun='mean', na.rm=TRUE) %>%
+  rename(elevation_mean = n39_w105_1arc_v3) %>%
+  mutate(elevation = elevation_mean - min(elevation_mean))
+
+grid3_den <- cbind(grid_den,elevation_extract %>% select(elevation))
+
+```
+
+# Slope
+```{r}
+
+
+den_slope_extract <- terra::extract(denver_slope,grid_den, fun='max', na.rm=TRUE) %>%
+  rename(slope_max = slope) 
+
+grid3_den <- cbind(grid3_den,den_slope_extract %>% select(slope_max))
+
+```
+
+Get Percent impermeable surface for each grid square. Prior to running this I repaired the geometries in ArcGIS Pro as reparing geometries in R was extremely slow.
+
+Summarize land cover data by grid square and figure out the mode land cover class for each grid square
+
+```{r}
+#Need four land cover tiles to cover all of Calgary
+land_cover1 <- rast('Data/denver/landcover/ESA_WorldCover_10m_2020_v100_N39W105_Map.tif')
+land_cover2 <- rast('Data/denver/landcover/ESA_WorldCover_10m_2020_v100_N39W108_Map.tif')
+
+denver_land_cover <- terra::merge(land_cover1,land_cover2) #Merge together all land cover rasters that overlap Calgary
+
+denver_land_cover2 <- crop(denver_land_cover , denver_bound %>% st_transform('EPSG:4326')) #Crop Raster to Calgary
+
+grid4_den <- grid3_den %>% st_transform('EPSG:4326') #Project grid into WGS1984 so that I do not have to project the raster
+
+mode <- function(class){
+  which.max(tabulate(class))
+}
+
+# Extract raster values within each polygon and determine the most common raster value
+land_cover_values <- extract(denver_land_cover2, grid4_den) %>%
+  rename(landcover = ESA_WorldCover_10m_2020_v100_N39W105_Map) %>%
+  group_by(ID) %>% summarise(landcover_mode = mode(landcover)) %>%
+  ungroup() %>%
+  select(landcover_mode)
+
+grid5_den <- cbind(grid4_den,land_cover_values) %>% 
+  st_transform('EPSG:6427') %>%
+  mutate(landcover_mode = as.factor(landcover_mode))
+
+
+```
+
+Distance to Water - Used some code from PPA.
+
+```{r den_water}
+
+lakes_ponds <- st_read("Data/denver/lakes_and_ponds/") %>%
+  st_transform("EPSG:6427") 
+streams <- st_read("Data/denver/streams/") %>%
+  st_transform("EPSG:6427") 
+
+
+centroid <- grid5_den %>%
+  st_centroid()
+
+nearest_feat <- st_nearest_feature(centroid,lakes_ponds)
+
+grid5_den$lakes_ponds_dist <- as.double(st_distance(centroid, lakes_ponds[nearest_feat,], by_element=TRUE))
+
+nearest_feat_streams <- st_nearest_feature(centroid,streams)
+
+grid5_den$streams_dist <- as.double(st_distance(centroid, streams[nearest_feat_streams,], by_element=TRUE))
+
+```
+

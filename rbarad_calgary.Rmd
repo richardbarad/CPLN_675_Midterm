@@ -175,3 +175,16 @@ grid6$water_dist <- as.double(st_distance(centroid, water[nearest_feat,], by_ele
 
 ```
 
+```{r cal_slope}
+calgary_boundary <- st_read('Data/calgary/CALGIS_CITYBOUND_LIMIT/CALGIS_CITYBOUND_LIMIT.shp') %>% st_transform('EPSG:3780')
+
+cal_dem <- raster('Data/calgary/calgarydem/w001001.adf') %>%
+  projectRaster(cal_dem, crs = 'EPSG:3780')
+
+
+
+calgary_slope <- terrain(cal_dem, v="slope", neighbors=8, unit="degrees")  
+
+plot(calgary_slope)
+```
+
