@@ -80,7 +80,7 @@ grid <- grid %>%
 
 ```
 
-Summarize the provided innundation data by grid square. Grid squares that are more than 25% innundated will be considered innundated in this model. 
+Summarize the provided innundation data by grid square. Grid squares that are more than 25% inundated will be considered inundated in this model. 
 
 ```{r}
 
@@ -223,7 +223,7 @@ grid7$fa_log <- log(grid7$fa_max + 1)
 
 # Make Maps of Predictors
 
-The maps below show four of our predictors summarized by grid square. The four predictors are elevation (meters), distance to water (meters), Slope (degrees), and flow accumulation. For flow accumulation we took the natural log of th grid square values in order to account for the large left skew in the data. As shown, areas with a low elevation tend to be located near water. Additionally, areas near water tend to have a low slope and high flow accumilation.
+The maps below show four of our predictors summarized by grid square. The four predictors are elevation (meters), distance to water (meters), Slope (degrees), and flow accumulation. For flow accumulation we took the natural log of th grid square values in order to account for the large left skew in the data. As shown, areas with a low elevation tend to be located near water. Additionally, areas near water tend to have a low slope and high flow accumulation.
 
 ``` {r make_maps,fig.width=14,fig.height=10}
 
