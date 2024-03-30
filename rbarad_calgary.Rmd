@@ -1,13 +1,33 @@
 ---
-title: "calgary_work"
-author: "Richard Barad"
-date: "2024-03-22"
+title: "Flood Prediction Model"
+author: "Richard Barad and Jarred Randall"
+date: "2024-04-03"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+# Planning Motivation
+
+In June 2013 the city of Calgary experienced an extreme flooding events that resulted in the displacement of 100,000 people and 1.7 billion dollars were needed for repairs. The event was one of the costliest disaster in Canada's history. In this project we aim to build a predictive model that will help Calgary and cities with similar topography be better prepared for future large scale flooding events such as the 2013 disaster. 
+
+The results of the model can help with early action and planning, as decision makers and public will have readily available information on what areas of the city might need to be evacuated. Additionally, the model can also help identify areas of the city that might need buyouts and/or revisions to the building code to require flood proofing. 
+
+An advantage of our algorithm compared to FEMA federal level floodplain mapping is that the model should be able to help identify areas of flooding beyond just river flooding. Because the model is based on a historical event that resulted in flooding not near rivers, the model should be able to capture flooding in other low lying areas and valleys outside of riverine areas. Our model will be trained and tested using inundation data from the historical flood event in 2013. We will then use our model to predict flood risk in Denver. Denver was selected because the city of Denver has similar geographic characteristics to Calgary and contains multiple rivers. 
+
+## Model Predictors
+
+The predictors of flooding that we will use in our model are:
+
+* Elevation above minimum elevation in the city
+* Dominant Land Cover
+* Slope
+* Distance to Water
+* Water Flow Accumulation (i.e: the number of grid squares flowing into a grid square)
+
+Our analysis will use 100m x 100m grid and we use a logistic regression model to determine areas that are likely to be flooded during a flood event that is similar to the event that occurred in Calgary in 2013. 
 
 # Import Libraries
 
@@ -23,7 +43,9 @@ library(gridExtra)
 
 # Data Setup for Calgary
 
-##Read Data for Calgary
+## Read Data for Calgary
+
+Read the Calgary boundary and inundation layer.
 
 ```{r read_files, echo=FALSE}
 
@@ -33,7 +55,9 @@ inundation <- rast('Data/calgary/inundation/w001001.adf')
 
 ```
 
-Make Grid
+## Make Grid
+
+Make a fishnet using st_make_grid and remove grid squares that are not located within the Calgary boundary.
 
 ```{r}
 
@@ -56,7 +80,7 @@ grid <- grid %>%
 
 ```
 
-Summarize innundation data by grid square.
+Summarize the provided innundation data by grid square. Grid squares that are more than 25% innundated will be considered innundated in this model. 
 
 ```{r}
 
@@ -76,13 +100,13 @@ extract_values <- extract(inundation, grid) %>% #Assign each raster pixel to a g
 
 ```
 
-Join extracted innundation data to grid squares, use right join to remove grid squares without innundation data.
+The map below shows the inundation area summarized by grid squares. The inundated areas have a value of 1.
 
 ```{r}
 
 grid2 <- right_join(grid,extract_values,by='ID') 
 
-# Make Map of innudated areas
+# Make Map of inundated areas
 
 ggplot()+
   geom_sf(data=grid2,aes(fill=in_id),color='transparent')+
@@ -91,6 +115,8 @@ ggplot()+
 ```
 
 # Engineer Predictor Features for Calgary
+
+## Elevation
 
 Get zonal statistics for grid squares, calculate mean elevation for each.
 
@@ -108,8 +134,9 @@ grid3 <- cbind(grid2,elevation_extract %>% select(elevation))
 
 ```
 
+## Land Cover
 
-Summarize land cover data by grid square and figure out the mode land cover class for each grid square
+Summarize land cover data by grid square and figure out the mode land cover class for each grid square.
 
 ```{r}
 #Need four land cover tiles to cover all of Calgary
@@ -141,7 +168,9 @@ grid5 <- cbind(grid4,land_cover_values) %>%
 
 ```
 
-Distance to Water - Used some code from PPA.
+## Distance to Water
+
+Calculate distance from grid square centroid to water.
 
 ```{r}
 
@@ -156,6 +185,9 @@ grid5$water_dist <- as.double(st_distance(centroid, water[nearest_feat,], by_ele
 
 ```
 
+
+## Slope
+
 Calculate slope and summarize slope by grid square - use max slope in each grid square.
 
 ```{r cal_slope}
@@ -169,7 +201,9 @@ grid6 <- cbind(grid5,slope_extract %>% select(slope_max))
 
 ```
 
-Summarize flow accumulation by grid square - use max flow accumulation by grid square. 
+## Flow Accumilation
+
+Summarize flow accumulation by grid square - use max flow accumulation for each grid square. Flow accumulation was calculated using ArcGIS Pro.
 
 ```{r cal_fa}
 
@@ -186,6 +220,10 @@ grid7$fa_log <- log(grid7$fa_max + 1)
 
 ```
 
+
+# Make Maps of Predictors
+
+The maps below show four of our predictors summarized by grid square. The four predictors are elevation (meters), distance to water (meters), Slope (degrees), and flow accumulation. For flow accumulation we took the natural log of th grid square values in order to account for the large left skew in the data. As shown, areas with a low elevation tend to be located near water. Additionally, areas near water tend to have a low slope and high flow accumilation.
 
 ``` {r make_maps,fig.width=14,fig.height=10}
 

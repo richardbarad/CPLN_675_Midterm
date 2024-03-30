@@ -1,2 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<metadata xml:lang="en"><Esri><CreaDate>20240327</CreaDate><CreaTime>15053400</CreaTime><ArcGISFormat>1.0</ArcGISFormat><SyncOnce>TRUE</SyncOnce><DataProperties><lineage><Process ToolSource="c:\program files\arcgis\pro\Resources\ArcToolbox\toolboxes\Spatial Analyst Tools.tbx\FlowAccumulation" Date="20240327" Time="150534">FlowAccumulation calgary_flowdirection C:\Users\richa\GitHub\CPLN_675_Midterm\Data\calgary\calgary_flowaccumilation.tif # Float D8</Process></lineage></DataProperties></Esri></metadata>
