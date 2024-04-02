@@ -104,7 +104,7 @@ extract_values <- extract(inundation, grid) %>% #Assign each raster pixel to a g
 
 ```
 
-The map below shows the inundation area summarized by grid squares. The inundated areas have a value of 1.
+The map below shows the flooded area summarized by grid squares.
 
 ```{r}
 
@@ -114,6 +114,7 @@ grid2 <- right_join(grid,extract_values,by='ID')
 
 ggplot()+
   geom_sf(data=grid2,aes(fill=in_id),color='transparent')+
+  scale_fill_manual(values=c('#fc9c9c','lightblue'),name='',labels=c('No Flood','Flood'))+
   theme_void()
 
 ```
@@ -254,7 +255,7 @@ grid.arrange(m1,m2,m3,m4)
 
 ## Model Training Sets
 
-create training and test sets. 
+We split our data into a training and test sets, the training data is used train and build the model, while the test data is used to test the accuracy of the model. 
 
 ```{r training_set}
 set.seed(3456)
@@ -266,22 +267,37 @@ floodTrain <- grid7[ trainIndex,]
 floodTest  <- grid7[-trainIndex,]
 ```
 
+The table below shows our model's regression summary. We will focus on the Estimate and the Pr(>|z|) columns (i.e t values). If the estimate column is negative it means that as the dependent variable decreases the odds of a the area being inundated increase. For example, as elevation, and distance to water decrease the odds of an area being flooded increase. On the other hand, as the logged flow accumulation and slope increase the odds of an area being flooded increases. The low t values indicate that all our predictors are statistically significant predictors of flooding except for landcover class 100 and land cover class 90. Land cover class 100 is Moss and lichen while land cover class 90 is Herbaceous Wetland.
+
 ```{r firstModel, warining = FALSE, message = FALSE}
 floodModel <- glm(in_id ~ ., 
                     family="binomial"(link="logit"), data = floodTrain %>%
                                                             as.data.frame() %>%
                                                             select(-geometry, -ID, -fa_max))
-summary(floodModel)
+
+summary(floodModel)$coefficients %>%
+  kable() %>%
+  kable_minimal()
 
 ```
 
 ## Model validation
 
-```{r predict_first}
-classProbs <- predict(floodModel, floodTest, type="response")
+We validate the model and check the accuracy using a variety of different metrics. The histogram below shows the predicted probabilities of a flood occuring for the grid squares in our test dataset. As shown, the predicted probability for the majority of grid squares is low. 
 
-hist(classProbs)
+```{r predict_first}
+classProbs <- predict(floodModel, floodTest, type="response") %>% as.data.frame()
+
+ggplot(data=classProbs,aes(.))+
+  geom_histogram(bins=100,fill='orange')+
+  theme_bw()+
+  ylab('Count')+
+  xlab('Probability')
+
+
 ```
+
+The charts below show the predicted probability density for grid squares in the test dataset that flooded and did not flood. Grid squares that did not flood (0) have a very low predicated probability of flooding, the predicted probability for flooding is below 0.05 for almost all grid squares. For grid squares in the test dataset that flooded the predicted probability ranges significantly, but peaks around 0.12.
 
 ```{r plot_preds}
 testProbs <- data.frame(obs = as.factor(floodTest$in_id),
@@ -298,6 +314,7 @@ ggplot(testProbs, aes(x = pred, fill=as.factor(obs))) +
                       name = "")+
   theme_bw()
 ```
+Based on the graph above we determined that the optimal threshold is 0.12. Grid squares that the model predicts as having a flood probability higher than 0.12 are classified as flooded by our model. Grid squares that have a flood probability lower than 0.12 are classified as likely not to flood. At the 0.12 threshold, the model correctly predicts 83% of flooded grid squares and 88% of non flooded grid squares.     
 
 ```{r confusion_matrix, message = FALSE, warning = FALSE}
 testProbs$predClass <- ifelse(testProbs$pred > .12 ,1,0)
@@ -306,6 +323,10 @@ caret::confusionMatrix(reference = as.factor(testProbs$obs),
                        data = as.factor(testProbs$predClass), 
                        positive = "1")
 ```
+
+The chart below shows the receiver operating characteristic curve (ROC) for our model. The ROC curve plots the false positive fraction (i.e: percent of flooded grid squares incorrectly predicted) and True positive fraction (i.e: percent of flooded grid squares correctly predicted) at fifty different thresholds. 
+
+The ROC curves help show the trade offs in a logistic regression analysis. If we select a very low thresholds, the model will correctly predict more flooded grid squares (i.e: the true positive fraction will be higher). However, when a low threshold is used the model will also likely incorrectly predict many flooded grid squares as not being flooded (i.e: the false positive rate will also be high).
 
 ```{r roc_curve, message = FALSE, warning = FALSE}
 
@@ -318,10 +339,25 @@ ggplot(testProbs, aes(d = as.numeric(obs), m = pred)) +
   geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey')+
   theme_bw()
 ```
+Based on the ROC curve and the density graph above we determined that the optimal threshold is 0.12. Grid squares that the model predicts as having a flood probability higher than 0.12 are classified as flooded by our model. Grid squares that have a flood probability lower than 0.12 are classified as likely not to flood. At the 0.12 threshold, the model correctly predicts 83% of flooded grid squares and 88% of non flooded grid squares.     
+
+```{r confusion_matrix, message = FALSE, warning = FALSE}
+testProbs$predClass <- ifelse(testProbs$pred > .12 ,1,0)
+
+caret::confusionMatrix(reference = as.factor(testProbs$obs), 
+                       data = as.factor(testProbs$predClass), 
+                       positive = "1")
+```
+
 
 ## Model Cross validation
 
+We also run a cross validation for our chosen model and threshold combination. The cross validation helps us understand if the model is generalizable to different data. A cross validation involves running the model multiple times while changing the data points which are included in the training and test datasets. We run a 100-fold cross validation using the Calgary data and compare the predicted outcomes to the actual outcome in each of the 100 test datasets and calculate the accuracy for each fold. 
+
+The histogram below shows a histogram of the accuracy for all fifty folds. As seen in the histogram below the model accuracy is consistent across folds, indicating that the model is generalizable.
+
 ```{r k_fold, warning = FALSE, message = FALSE}
+
 ctrl <- trainControl(method = "cv", 
                      number = 100, 
                      p = 0.7, 
@@ -333,18 +369,15 @@ cvFit <- train(as.factor(in_id) ~ .,  data = grid7 %>%
                method="glm", family="binomial",
                trControl = ctrl)
 
-cvFit
-```
-
-
-```{r cv_hist, warning = FALSE, message = FALSE}
 ggplot(as.data.frame(cvFit$resample), aes(Accuracy)) + 
-  geom_histogram() +
+  geom_histogram(bins=100) +
   scale_x_continuous(limits = c(0, 1)) +
   labs(x="Accuracy",
        y="Count")+
   theme_bw()
+
 ```
+
 
 ```{r}
 
@@ -361,8 +394,30 @@ grid7 <- grid7 %>%
 
 ```
 
+The maps below show the results for predictions in the Calgary Test Set and Predictions for all of Calgary. The predications for the test set show the location of false negatives, false positives, true negatives, and true positives. As shown, the majority of true positives are located near the river. However, there are also a large number of false positives located along the river in the Northern areas of the city and there is also a cluster false positives in the eastern area of the city. 
+
+```{r}
+
+grid.arrange(nrow=1,
+
+ggplot()+
+  geom_sf(data=floodtest1,aes(fill=type),color='transparent')+
+  scale_fill_manual(values=c('grey50','blue','lightgreen','purple'),name='',labels=c('False Negative','False Positive','True Negative','True Positive'))+
+  theme_void()+
+  ggtitle('Results for Calgary Test Set'),
+
+ggplot()+
+  geom_sf(data=grid7,aes(fill=outcome),color='transparent')+
+  scale_fill_manual(values=c('#fc9c9c','lightblue'),name='',labels=c('No Flood','Flood'))+
+  theme_void()+
+  ggtitle('Predictions for Calgary')
+)
+
+```
 
 # Denver Feature Engineering
+
+Next we build a fishnet for the city of Denver. The fishnet includes the same variables as the Calgary fishnet and is also the same size as the Calgary fishnet. 
 
 ## Denver Elevation and Slope
 
@@ -526,20 +581,9 @@ grid6_den <- grid6_den %>%
 
 ```
 
-```{r fig.width=11,fig.height=4}
-grid.arrange(nrow=1,
-             
-ggplot()+
-  geom_sf(data=floodtest1,aes(fill=type),color='transparent')+
-  scale_fill_discrete(name='result type')+
-  theme_void()+
-  ggtitle('Results for Calgary Test Set'),
+The map below shows flood predictions for Denver using the model which is trained in Calgary. Similar to Calgary, the areas that are predicted to be flooded in Denver tend to be located near water bodies.
 
-ggplot()+
-  geom_sf(data=grid7,aes(fill=outcome),color='transparent')+
-  scale_fill_manual(values=c('#fc9c9c','lightblue'),name='',labels=c('No Flood','Flood'))+
-  theme_void()+
-  ggtitle('Predictions for Calgary'),
+```{r fig.width=11,fig.height=4}
 
 ggplot()+
   geom_sf(data=grid6_den,aes(fill=outcome),color='transparent')+
@@ -547,6 +591,4 @@ ggplot()+
   theme_void()+
   ggtitle('Predictions for Denver')
   
-)
-
 ```
