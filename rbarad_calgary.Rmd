@@ -2,12 +2,20 @@
 title: "Flood Prediction Model"
 author: "Richard Barad and Jarred Randall"
 date: "2024-04-03"
-output: html_document
+output:
+  html_document:
+    theme: journal
+    number_sections: true
+    toc: true
+    toc_float: true
+    code_folding: hide
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
+
+For a high level overview of this project please view the [Youtube video](https://youtu.be/EpNPwfKWg6Q).
 
 # Planning Motivation
 
@@ -17,7 +25,7 @@ The results of the model can help with early action and planning, as decision ma
 
 An advantage of our algorithm compared to FEMA federal level floodplain mapping is that the model should be able to help identify areas of flooding beyond just river flooding. Because the model is based on a historical event that resulted in flooding not near rivers, the model should be able to capture flooding in other low lying areas and valleys outside of riverine areas. Our model will be trained and tested using inundation data from the historical flood event in 2013. We will then use our model to predict flood risk in Denver. Denver was selected because the city of Denver has similar geographic characteristics to Calgary and contains multiple rivers. 
 
-## Model Predictors
+# Model Predictors
 
 The predictors of flooding that we will use in our model are:
 
@@ -29,9 +37,8 @@ The predictors of flooding that we will use in our model are:
 
 Our analysis will use 100m x 100m grid and we use a logistic regression model to determine areas that are likely to be flooded during a flood event that is similar to the event that occurred in Calgary in 2013. 
 
-# Import Libraries
 
-```{r cars, results='hide'}
+```{r import_libraries, results='hide',warning=FALSE, include=FALSE}
 library(sf)
 library(caret)
 library(pscl)
@@ -51,7 +58,7 @@ library(gridExtra)
 
 Read the Calgary boundary and inundation layer.
 
-```{r read_files, echo=FALSE}
+```{r read_files, message=FALSE, results='hide'}
 
 calgary_boundary <- st_read('Data/calgary/CALGIS_CITYBOUND_LIMIT/CALGIS_CITYBOUND_LIMIT.shp') %>% st_transform('EPSG:3780')
 
@@ -61,9 +68,9 @@ inundation <- rast('Data/calgary/inundation/w001001.adf')
 
 ## Make Grid
 
-Make a fishnet using st_make_grid and remove grid squares that are not located within the Calgary boundary.
+Make a fishnet using st_make_grid and remove grid squares that are not located within the Calgary boundary. Out grid squares are 100 x 100 meters.
 
-```{r}
+```{r make_grid1, warning=FALSE}
 
 inundation <- project(inundation,'EPSG:3780') #Project innundation raster into correct cordinate system
 
@@ -104,7 +111,7 @@ extract_values <- extract(inundation, grid) %>% #Assign each raster pixel to a g
 
 ```
 
-The map below shows the flooded area summarized by grid squares.
+The map below shows the flooded area in 2013 summarized by grid squares.
 
 ```{r}
 
@@ -119,13 +126,13 @@ ggplot()+
 
 ```
 
-# Engineer Predictor Features for Calgary
+# Calgary Data Preperation
 
 ## Elevation
 
-Get zonal statistics for grid squares, calculate mean elevation for each.
+Get zonal statistics for grid squares, calculate mean elevation for each grid square.
 
-```{r}
+```{r elevation}
 
 dem <- rast('Data/calgary/calgarydem/w001001.adf')
 
@@ -143,7 +150,8 @@ grid3 <- cbind(grid2,elevation_extract %>% select(elevation))
 
 Summarize land cover data by grid square and figure out the mode land cover class for each grid square.
 
-```{r}
+```{r land_cover_zonal, results='hide'}
+
 #Need four land cover tiles to cover all of Calgary
 land_cover1 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W114_Map.tif')
 land_cover2 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W117_Map.tif')
@@ -177,7 +185,7 @@ grid5 <- cbind(grid4,land_cover_values) %>%
 
 Calculate distance from grid square centroid to water.
 
-```{r}
+```{r water_dist, message=FALSE, warning=FALSE, results='hide'}
 
 water <- st_read('Data/calgary/Hydrology_20240320.geojson') %>% st_transform('EPSG:3780')
 
@@ -206,7 +214,7 @@ grid6 <- cbind(grid5,slope_extract %>% select(slope_max))
 
 ```
 
-## Flow Accumilation
+## Flow Accumulation 
 
 Summarize flow accumulation by grid square - use max flow accumulation for each grid square. Flow accumulation was calculated using ArcGIS Pro.
 
@@ -225,10 +233,11 @@ grid7$fa_log <- log(grid7$fa_max + 1)
 
 ```
 
+# Exploratory Analysis
 
-# Make Maps of Predictors
+## Predictor Maps
 
-The maps below show four of our predictors summarized by grid square. The four predictors are elevation (meters), distance to water (meters), Slope (degrees), and flow accumulation. For flow accumulation we took the natural log of th grid square values in order to account for the large left skew in the data. As shown, areas with a low elevation tend to be located near water. Additionally, areas near water tend to have a low slope and high flow accumulation.
+The maps below show four of our predictors summarized by grid square. The four predictors are elevation (meters), distance to water (meters), Slope (degrees), and flow accumulation (Number of Grid Squares). For flow accumulation we took the natural log of th grid square values in order to account for the large left skew in the data. As shown, areas with a low elevation tend to be located near water. Additionally, areas near water tend to have a low slope and high flow accumulation.
 
 ``` {r make_maps,fig.width=14,fig.height=10}
 
@@ -251,6 +260,29 @@ m4 <- create_map(fa_log,'Flow Accumilation (Natural Log)','cividis','Number of P
 grid.arrange(m1,m2,m3,m4)
 
 ```
+
+## Charts
+
+The plots below provide another method of exploring the data. The plots present the spread of the elevation, flow accumulation, slope, and distance from water variables. As shown, the elevation tends to be lower for grid squares that flooded. Almost all grid squares that flooded are within 150 meters of the lowest elevation in the city. Additionally, the grid squares that flooded tend be located near water. Additionally, the flow accumulation tends to be higher for grid squares that flooded. 
+
+```{r, fig.height=4,fig.width=10}
+
+t <- grid7 %>%
+  as_data_frame() %>%
+  select(in_id,elevation,water_dist,fa_log) %>%
+  pivot_longer(cols = -in_id,names_to='variable',values_to='value')
+
+ggplot(t) + 
+     geom_violin(aes(x = as.factor(in_id), 
+                  y = value, fill = as.factor(in_id))) + 
+     facet_wrap(~variable, scales = "free",labeller = as_labeller(c(elevation = "elevation", fa_log = "Flow Accumulation Natural Log", slope_max = 'Slope', water_dist= 'Distance to Water'))) +
+     labs(x="Innundated", y="Value") + 
+     scale_fill_manual(values = c("red", "blue"),
+     labels = c("Not Flooded","Flooded"), name = "") +
+     labs(x="Flooded", y="Value")
+
+```
+
 # Model
 
 ## Model Training Sets
@@ -267,7 +299,7 @@ floodTrain <- grid7[ trainIndex,]
 floodTest  <- grid7[-trainIndex,]
 ```
 
-The table below shows our model's regression summary. We will focus on the Estimate and the Pr(>|z|) columns (i.e t values). If the estimate column is negative it means that as the dependent variable decreases the odds of a the area being inundated increase. For example, as elevation, and distance to water decrease the odds of an area being flooded increase. On the other hand, as the logged flow accumulation and slope increase the odds of an area being flooded increases. The low t values indicate that all our predictors are statistically significant predictors of flooding except for landcover class 100 and land cover class 90. Land cover class 100 is Moss and lichen while land cover class 90 is Herbaceous Wetland.
+The table below shows our model's regression summary. We will focus on the Estimate and the Pr(>|z|) columns (i.e t values). If the estimate column is negative it means that as the independent variable decreases the odds of a the area being inundated increase. For example, as elevation, and distance to water decrease the odds of an area being flooded increase. On the other hand, as the logged flow accumulation and slope increase the odds of an area being flooded increases. The low t values indicate that all our predictors are statistically significant predictors of flooding except for landcover class 100 and land cover class 90 variables. Land cover class 100 is Moss and lichen while land cover class 90 is Herbaceous Wetland.
 
 ```{r firstModel, warining = FALSE, message = FALSE}
 floodModel <- glm(in_id ~ ., 
@@ -283,13 +315,13 @@ summary(floodModel)$coefficients %>%
 
 ## Model validation
 
-We validate the model and check the accuracy using a variety of different metrics. The histogram below shows the predicted probabilities of a flood occuring for the grid squares in our test dataset. As shown, the predicted probability for the majority of grid squares is low. 
+We validate the model and check the accuracy using a variety of different metrics. The histogram below shows the predicted probabilities of a flood occurring for the grid squares in our test dataset. As shown, the predicted probability for the majority of grid squares is low. 
 
 ```{r predict_first}
-classProbs <- predict(floodModel, floodTest, type="response") %>% as.data.frame()
+classProbs <- predict(floodModel, floodTest, type="response") %>% data.frame %>% setNames(.,c('pred'))
 
-ggplot(data=classProbs,aes(.))+
-  geom_histogram(bins=100,fill='orange')+
+ggplot(data=classProbs,aes(x=pred))+
+  geom_histogram(bins=100,fill='orange',color='grey90')+
   theme_bw()+
   ylab('Count')+
   xlab('Probability')
@@ -297,7 +329,7 @@ ggplot(data=classProbs,aes(.))+
 
 ```
 
-The charts below show the predicted probability density for grid squares in the test dataset that flooded and did not flood. Grid squares that did not flood (0) have a very low predicated probability of flooding, the predicted probability for flooding is below 0.05 for almost all grid squares. For grid squares in the test dataset that flooded the predicted probability ranges significantly, but peaks around 0.12.
+The charts below show the predicted probability density for grid squares in the test dataset that flooded and did not flood. Grid squares that did not flood (0) have a very low predicated probability of flooding, the predicted probability for flooding is below 0.05 for almost all grid squares. For grid squares in the test dataset that flooded the predicted probability ranges significantly, but peaks around 0.12. The predicted probability of flooding is below 0.5 for the majority of flooded grid squares, indicating that a 0.5 threshold may not be optimal. 
 
 ```{r plot_preds}
 testProbs <- data.frame(obs = as.factor(floodTest$in_id),
@@ -314,16 +346,7 @@ ggplot(testProbs, aes(x = pred, fill=as.factor(obs))) +
                       name = "")+
   theme_bw()
 ```
-Based on the graph above we determined that the optimal threshold is 0.12. Grid squares that the model predicts as having a flood probability higher than 0.12 are classified as flooded by our model. Grid squares that have a flood probability lower than 0.12 are classified as likely not to flood. At the 0.12 threshold, the model correctly predicts 83% of flooded grid squares and 88% of non flooded grid squares.     
-
-```{r confusion_matrix, message = FALSE, warning = FALSE}
-testProbs$predClass <- ifelse(testProbs$pred > .12 ,1,0)
-
-caret::confusionMatrix(reference = as.factor(testProbs$obs), 
-                       data = as.factor(testProbs$predClass), 
-                       positive = "1")
-```
-
+   
 The chart below shows the receiver operating characteristic curve (ROC) for our model. The ROC curve plots the false positive fraction (i.e: percent of flooded grid squares incorrectly predicted) and True positive fraction (i.e: percent of flooded grid squares correctly predicted) at fifty different thresholds. 
 
 The ROC curves help show the trade offs in a logistic regression analysis. If we select a very low thresholds, the model will correctly predict more flooded grid squares (i.e: the true positive fraction will be higher). However, when a low threshold is used the model will also likely incorrectly predict many flooded grid squares as not being flooded (i.e: the false positive rate will also be high).
@@ -339,20 +362,41 @@ ggplot(testProbs, aes(d = as.numeric(obs), m = pred)) +
   geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey')+
   theme_bw()
 ```
-Based on the ROC curve and the density graph above we determined that the optimal threshold is 0.12. Grid squares that the model predicts as having a flood probability higher than 0.12 are classified as flooded by our model. Grid squares that have a flood probability lower than 0.12 are classified as likely not to flood. At the 0.12 threshold, the model correctly predicts 83% of flooded grid squares and 88% of non flooded grid squares.     
+
+Based on the ROC curve and the density graph above we determined that the optimal threshold is 0.12. Grid squares that the model predicts as having a flood probability higher than 0.12 are classified as flooded by our model. Grid squares that have a flood probability lower than 0.12 are classified as likely not to flood. At the 0.12 threshold, the model correctly predicts 83% of flooded grid squares (Sensitivity) and 88% of non flooded grid squares (Specificity).     
 
 ```{r confusion_matrix, message = FALSE, warning = FALSE}
 testProbs$predClass <- ifelse(testProbs$pred > .12 ,1,0)
 
-caret::confusionMatrix(reference = as.factor(testProbs$obs), 
+matrix <- caret::confusionMatrix(reference = as.factor(testProbs$obs), 
                        data = as.factor(testProbs$predClass), 
                        positive = "1")
+
+matrix$table %>%   
+  data.frame() %>%
+  spread(key=Reference,value=Freq) %>%
+  rename('No_Flood' = '0', 'Flood' = '1') %>%
+  mutate(Total = No_Flood + Flood,
+         Prediction = c('No_Flood','Flood')) %>%
+  kbl() %>%
+  add_header_above(header=c(" " = 1,"Actual" = 2," " = 1)) %>%
+  kable_minimal() %>%
+  kable_styling(full_width = F)
+
+matrix$byClass %>%
+  data.frame() %>%
+  head(2) %>%
+  rename(.,Value = .) %>%
+  mutate(Value = round(Value*100,2)) %>%
+  kbl(col.names = c('Accuracy Metric','Value')) %>%
+  kable_minimal() %>%
+  kable_styling(full_width = F)
 ```
 
 
 ## Model Cross validation
 
-We also run a cross validation for our chosen model and threshold combination. The cross validation helps us understand if the model is generalizable to different data. A cross validation involves running the model multiple times while changing the data points which are included in the training and test datasets. We run a 100-fold cross validation using the Calgary data and compare the predicted outcomes to the actual outcome in each of the 100 test datasets and calculate the accuracy for each fold. 
+We also run a cross validation for our model. The cross validation helps us understand if the model is generalizable to different data. A cross validation involves running the model multiple times while changing the data points which are included in the training and test datasets. We run a 100-fold cross validation using the Calgary data and compare the predicted outcomes to the actual outcome in each of the 100 test datasets and calculate the accuracy for each fold. 
 
 The histogram below shows a histogram of the accuracy for all fifty folds. As seen in the histogram below the model accuracy is consistent across folds, indicating that the model is generalizable.
 
@@ -370,7 +414,7 @@ cvFit <- train(as.factor(in_id) ~ .,  data = grid7 %>%
                trControl = ctrl)
 
 ggplot(as.data.frame(cvFit$resample), aes(Accuracy)) + 
-  geom_histogram(bins=100) +
+  geom_histogram(fill='orange',color='grey90',bins=100) +
   scale_x_continuous(limits = c(0, 1)) +
   labs(x="Accuracy",
        y="Count")+
@@ -394,7 +438,7 @@ grid7 <- grid7 %>%
 
 ```
 
-The maps below show the results for predictions in the Calgary Test Set and Predictions for all of Calgary. The predications for the test set show the location of false negatives, false positives, true negatives, and true positives. As shown, the majority of true positives are located near the river. However, there are also a large number of false positives located along the river in the Northern areas of the city and there is also a cluster false positives in the eastern area of the city. 
+The maps below show the results for predictions in the Calgary Test Set and Predictions for all of Calgary. The predictions for the test set show the location of false negatives, false positives, true negatives, and true positives. As shown, the majority of true positives are located near the river. However, there are also a large number of false positives located along the river in the Northern areas of the city and there is also a large cluster of false positives in the eastern area of the city. 
 
 ```{r}
 
@@ -415,13 +459,15 @@ ggplot()+
 
 ```
 
-# Denver Feature Engineering
+# Denver Data Preperation and Analysis
 
 Next we build a fishnet for the city of Denver. The fishnet includes the same variables as the Calgary fishnet and is also the same size as the Calgary fishnet. 
 
-## Denver Elevation and Slope
+## Denver Elevation Data Preprocessing
 
-```{r denver_slope}
+Preprocess elevation DEM for Denver and create slope raster from DEM.
+
+```{r denver_slope, message=FALSE, results='hide', warning=FALSE}
 
 dem_1 <- rast("Data/denver/n39_w105_1arc_v3.tif")
 
@@ -447,7 +493,9 @@ denver_slope <- terrain(denver_dem, v="slope", neighbors=8, unit="degrees")
 
 ## Denver Grid
 
-```{r}
+Make grid for Denver.
+
+```{r grid_den, warning=FALSE}
 
 grid_den <- st_make_grid(denver_bound,100,square=TRUE) %>%
   st_sf() %>%
@@ -468,9 +516,9 @@ grid_den <- grid_den %>%
 
 ## Elevation Zonal Stats
 
-Get zonal statistics for grid squares, calculate mean elevation for each.
+Extract elevation data for each grid squares, calculate mean elevation for each grid square.
 
-```{r}
+```{r denver_elevation}
 
 elevation_extract <- terra::extract(merg_dem,grid_den, fun='mean', na.rm=TRUE) %>%
   rename(elevation_mean = n39_w105_1arc_v3) %>%
@@ -482,7 +530,9 @@ grid3_den <- cbind(grid_den,elevation_extract %>% select(elevation))
 
 ## Slope Zonal Stats
 
-```{r}
+Extract slope data for each grid squares, calculate max slope for each grid square.
+
+```{r denver_slope_zonal}
 
 
 den_slope_extract <- terra::extract(denver_slope,grid_den, fun='max', na.rm=TRUE) %>%
@@ -496,7 +546,7 @@ grid3_den <- cbind(grid3_den,den_slope_extract %>% select(slope_max))
 
 Summarize land cover data by grid square and figure out the mode land cover class for each grid square.
 
-```{r}
+```{r den_land_cover, warning=FALSE, results='hide'}
 #Need four land cover tiles to cover all of Calgary
 land_cover1 <- rast('Data/denver/landcover/ESA_WorldCover_10m_2020_v100_N39W105_Map.tif')
 land_cover2 <- rast('Data/denver/landcover/ESA_WorldCover_10m_2020_v100_N39W108_Map.tif')
@@ -527,7 +577,9 @@ grid5_den <- cbind(grid4_den,land_cover_values) %>%
 
 ## Distance to Water
 
-```{r den_water}
+Calculate distance to water for each grid square. The Denver data includes seperate streams and lakes data, we calculated the distance from each grid square to the nearest lake and the nearest stream and then took the distance which was lowest as the distance to water. 
+
+```{r den_water, warning=FALSE, results='hide'}
 
 lakes_ponds <- st_read("Data/denver/lakes_and_ponds/") %>%
   st_transform("EPSG:6427") 
@@ -552,11 +604,11 @@ grid5_den <- grid5_den %>% select(-streams_dist,-lakes_ponds_dist)
 
 ```
 
-## Flow Accumilation
+## Flow Accumulation
 
 Summarize flow accumulation by grid square - use max flow accumulation for each grid square. Flow accumulation was calculated using ArcGIS Pro.
 
-```{r cal_fa}
+```{r den_fa}
 
 denver_fa <- rast('Data/denver/denver_flow_accumilation.tif') 
 
@@ -571,7 +623,9 @@ grid6_den$fa_log <- log(grid6_den$fa_max + 1)
 
 ```
 
-## Predictions for Denver
+## Make Predictions for Denver
+
+The map below shows flood predictions for Denver using the model which is trained in Calgary. Similar to Calgary, the areas that are predicted to be flooded in Denver tend to be located near water bodies.
 
 ```{r denver_prediction}
 
@@ -581,9 +635,8 @@ grid6_den <- grid6_den %>%
 
 ```
 
-The map below shows flood predictions for Denver using the model which is trained in Calgary. Similar to Calgary, the areas that are predicted to be flooded in Denver tend to be located near water bodies.
 
-```{r fig.width=11,fig.height=4}
+```{r denver_map_predictions, fig.width=11,fig.height=4}
 
 ggplot()+
   geom_sf(data=grid6_den,aes(fill=outcome),color='transparent')+

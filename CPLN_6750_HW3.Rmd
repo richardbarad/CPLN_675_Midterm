@@ -1,0 +1,621 @@
+---
+title: "Flood Prediction Model"
+author: "Richard Barad and Jarred Randall"
+date: "2024-04-03"
+output:
+  html_document:
+    theme: journal
+    toc: true
+    toc_float: true
+    code_folding: hide
+    code_download: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+For a high level overview of this report please view the [Youtube video]().
+
+# Planning Motivation
+
+In June 2013 the city of Calgary experienced an extreme flooding events that resulted in the displacement of 100,000 people and 1.7 billion dollars were needed for repairs. The event was one of the costliest disaster in Canada's history. In this project we aim to build a predictive model that will help Calgary and cities with similar topography be better prepared for future large scale flooding events such as the 2013 disaster. 
+
+The results of the model can help with early action and planning, as decision makers and public will have readily available information on what areas of the city might need to be evacuated. Additionally, the model can also help identify areas of the city that might need buyouts and/or revisions to the building code to require flood proofing. 
+
+An advantage of our algorithm compared to FEMA federal level floodplain mapping is that the model should be able to help identify areas of flooding beyond just river flooding. Because the model is based on a historical event that resulted in flooding not near rivers, the model should be able to capture flooding in other low lying areas and valleys outside of riverine areas. Our model will be trained and tested using inundation data from the historical flood event in 2013. We will then use our model to predict flood risk in Denver. Denver was selected because the city of Denver has similar geographic characteristics to Calgary and contains multiple rivers. 
+
+## Model Predictors
+
+The predictors of flooding that we will use in our model are:
+
+* Elevation above minimum elevation in the city
+* Dominant Land Cover
+* Slope
+* Distance to Water
+* Water Flow Accumulation (i.e: the number of grid squares flowing into a grid square)
+
+Our analysis will use 100m x 100m grid and we use a logistic regression model to determine areas that are likely to be flooded during a flood event that is similar to the event that occurred in Calgary in 2013. 
+
+# Import Libraries
+
+```{r import_libraries, results='hide',warning=FALSE}
+library(sf)
+library(caret)
+library(pscl)
+library(plotROC)
+library(pROC)
+library(tidyverse)
+library(terra)
+library(kableExtra)
+library(tigris)
+library(viridis)
+library(gridExtra)
+```
+
+# Data Setup for Calgary
+
+## Read Data for Calgary
+
+Read the Calgary boundary and inundation layer.
+
+```{r read_files, echo=FALSE, message=FALSE, results='hide'}
+
+calgary_boundary <- st_read('Data/calgary/CALGIS_CITYBOUND_LIMIT/CALGIS_CITYBOUND_LIMIT.shp') %>% st_transform('EPSG:3780')
+
+inundation <- rast('Data/calgary/inundation/w001001.adf')
+
+```
+
+## Make Grid
+
+Make a fishnet using st_make_grid and remove grid squares that are not located within the Calgary boundary. Out grid squares are 100 x 100 meters.
+
+```{r make_grid1, warning=FALSE}
+
+inundation <- project(inundation,'EPSG:3780') #Project innundation raster into correct cordinate system
+
+grid <- st_make_grid(calgary_boundary,100,square=TRUE) %>%
+  st_sf() %>%
+  mutate(ID = row_number())
+
+# Get just grid squares with centroid in Calgary city limits
+
+grid <- grid %>%
+  st_centroid() %>%
+  st_join(.,calgary_boundary,join = st_intersects,left=FALSE) %>%
+  st_drop_geometry() %>%
+  left_join(.,grid,by='ID') %>%
+  st_as_sf() %>%
+  mutate(ID = row_number()) %>%
+  select(ID)
+
+```
+
+Summarize the provided inundation data by grid square. Grid squares that are more than 25% inundated will be considered inundated in this model. 
+
+```{r}
+
+# Count the number of inundation cells in each grid square in fishnet
+
+extract_values <- extract(inundation, grid) %>% #Assign each raster pixel to a grid square
+  group_by(ID,w001001) %>% tally() %>%
+  ungroup() %>%
+  pivot_wider(id_cols=ID,names_from=w001001,values_from=n) %>%
+  replace(is.na(.), 0) %>% #Replace NA with 0
+  filter(`NA` == 0) %>% #Filter out grid squares that do not have inundation data
+  # 1 and 2 are inundation, sum those together and sum 0 and 3 together for non_inundation
+  mutate(innundation = `1` + `2`,
+         non_innundate = `0` + `3` + `NA`,
+         in_id = as.factor(ifelse(innundation/(innundation + non_innundate) > 0.25,1,0))) %>% #If grid square is more than 25% inundate consider it inundate (i.e: 1)
+  select(ID,in_id)
+
+```
+
+The map below shows the flooded area in 2013 summarized by grid squares.
+
+```{r}
+
+grid2 <- right_join(grid,extract_values,by='ID') 
+
+# Make Map of inundated areas
+
+ggplot()+
+  geom_sf(data=grid2,aes(fill=in_id),color='transparent')+
+  scale_fill_manual(values=c('#fc9c9c','lightblue'),name='',labels=c('No Flood','Flood'))+
+  theme_void()
+
+```
+
+# Engineer Predictor Features for Calgary
+
+## Elevation
+
+Get zonal statistics for grid squares, calculate mean elevation for each grid square.
+
+```{r elevation}
+
+dem <- rast('Data/calgary/calgarydem/w001001.adf')
+
+dem <- project(dem,'EPSG:3780')
+
+elevation_extract <- terra::extract(dem,grid2,fun='mean',na.rm=TRUE) %>%
+  rename(elevation_mean = w001001) %>%
+  mutate(elevation = elevation_mean - min(elevation_mean))
+
+grid3 <- cbind(grid2,elevation_extract %>% select(elevation))
+
+```
+
+## Land Cover
+
+Summarize land cover data by grid square and figure out the mode land cover class for each grid square.
+
+```{r land_cover_zonal, results='hide'}
+
+#Need four land cover tiles to cover all of Calgary
+land_cover1 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W114_Map.tif')
+land_cover2 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N48W117_Map.tif')
+land_cover3 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N51W114_Map.tif')
+land_cover4 <- rast('Data/calgary/worldcover/ESA_WorldCover_10m_2020_v100_N51W117_Map.tif')
+
+calgary_land_cover <- terra::merge(land_cover1,land_cover2,land_cover3,land_cover4) #Merge together all land cover rasters that overlap Calgary
+
+calgary_land_cover2 <- crop(calgary_land_cover, calgary_boundary %>% st_transform('EPSG:4326')) #Crop Raster to Calgary
+
+grid4 <- grid3 %>% st_transform('EPSG:4326') #Project grid into WGS1984 so that I do not have to project the raster
+
+mode <- function(class){
+  which.max(tabulate(class))
+}
+
+# Extract raster values within each polygon and determine the most common raster value
+land_cover_values <- extract(calgary_land_cover2, grid4) %>%
+  rename(landcover = ESA_WorldCover_10m_2020_v100_N48W114_Map) %>%
+  group_by(ID) %>% summarise(landcover_mode = mode(landcover)) %>%
+  ungroup() %>%
+  select(landcover_mode)
+
+grid5 <- cbind(grid4,land_cover_values) %>% 
+  st_transform('EPSG:3780') %>%
+  mutate(landcover_mode = as.factor(landcover_mode))
+
+```
+
+## Distance to Water
+
+Calculate distance from grid square centroid to water.
+
+```{r water_dist, message=FALSE, warning=FALSE, results='hide'}
+
+water <- st_read('Data/calgary/Hydrology_20240320.geojson') %>% st_transform('EPSG:3780')
+
+centroid <- grid5 %>%
+  st_centroid()
+
+nearest_feat <- st_nearest_feature(centroid,water)
+
+grid5$water_dist <- as.double(st_distance(centroid, water[nearest_feat,], by_element=TRUE))
+
+```
+
+
+## Slope
+
+Calculate slope and summarize slope by grid square - use max slope in each grid square.
+
+```{r cal_slope}
+
+calgary_slope <- terrain(dem, v="slope", neighbors=8, unit="degrees")  
+
+slope_extract <- terra::extract(calgary_slope,grid5, fun='max', na.rm=TRUE) %>%
+  rename(slope_max = slope) 
+
+grid6 <- cbind(grid5,slope_extract %>% select(slope_max))
+
+```
+
+## Flow Accumilation
+
+Summarize flow accumulation by grid square - use max flow accumulation for each grid square. Flow accumulation was calculated using ArcGIS Pro.
+
+```{r cal_fa}
+
+calgary_fa <- rast('Data/calgary/calgary_flowaccumilation.tif') 
+
+calgary_fa <- project(calgary_fa,'EPSG:3780')
+
+fa_extract <- terra::extract(calgary_fa,grid6, fun='max', na.rm=TRUE) %>%
+  rename(fa_max = calgary_flowaccumilation) 
+
+grid7 <- cbind(grid6,fa_extract %>% select(fa_max))
+
+grid7$fa_log <- log(grid7$fa_max + 1)
+
+```
+
+
+# Make Maps of Predictors
+
+The maps below show four of our predictors summarized by grid square. The four predictors are elevation (meters), distance to water (meters), Slope (degrees), and flow accumulation (Number of Grid Squares). For flow accumulation we took the natural log of th grid square values in order to account for the large left skew in the data. As shown, areas with a low elevation tend to be located near water. Additionally, areas near water tend to have a low slope and high flow accumulation.
+
+``` {r make_maps,fig.width=14,fig.height=10}
+
+create_map <- function(variable,title,color_scale,legend_label){
+  ggplot()+
+    geom_sf(data=grid7,aes(fill={{variable}}),color='transparent')+
+    scale_fill_viridis(option=color_scale,name=legend_label)+
+    ggtitle(title)+
+    theme_void()
+}
+
+m1 <- create_map(elevation,'Elevation Above Minimum City Elevation (meters)','rocket','elevation (meters')
+
+m2 <- create_map(water_dist,'Distance to Water (meters)','plasma','distance (meters)')
+
+m3 <- create_map(slope_max,'Slope','magma','Slope')
+
+m4 <- create_map(fa_log,'Flow Accumilation (Natural Log)','cividis','Number of Pixels')
+
+grid.arrange(m1,m2,m3,m4)
+
+```
+
+# Model
+
+## Model Training Sets
+
+We split our data into a training and test sets, the training data is used train and build the model, while the test data is used to test the accuracy of the model. 
+
+```{r training_set}
+set.seed(3456)
+trainIndex <- createDataPartition(grid7$landcover_mode, p = .70,
+                                  list = FALSE,
+                                  times = 1)
+
+floodTrain <- grid7[ trainIndex,]
+floodTest  <- grid7[-trainIndex,]
+```
+
+The table below shows our model's regression summary. We will focus on the Estimate and the Pr(>|z|) columns (i.e t values). If the estimate column is negative it means that as the independent variable decreases the odds of a the area being inundated increase. For example, as elevation, and distance to water decrease the odds of an area being flooded increase. On the other hand, as the logged flow accumulation and slope increase the odds of an area being flooded increases. The low t values indicate that all our predictors are statistically significant predictors of flooding except for landcover class 100 and land cover class 90 variables. Land cover class 100 is Moss and lichen while land cover class 90 is Herbaceous Wetland.
+
+```{r firstModel, warining = FALSE, message = FALSE}
+floodModel <- glm(in_id ~ ., 
+                    family="binomial"(link="logit"), data = floodTrain %>%
+                                                            as.data.frame() %>%
+                                                            select(-geometry, -ID, -fa_max))
+
+summary(floodModel)$coefficients %>%
+  kable() %>%
+  kable_minimal()
+
+```
+
+## Model validation
+
+We validate the model and check the accuracy using a variety of different metrics. The histogram below shows the predicted probabilities of a flood occurring for the grid squares in our test dataset. As shown, the predicted probability for the majority of grid squares is low. 
+
+```{r predict_first}
+classProbs <- predict(floodModel, floodTest, type="response") %>% data.frame %>% setNames(.,c('pred'))
+
+ggplot(data=classProbs,aes(x=pred))+
+  geom_histogram(bins=100,fill='orange',color='grey90')+
+  theme_bw()+
+  ylab('Count')+
+  xlab('Probability')
+
+
+```
+
+The charts below show the predicted probability density for grid squares in the test dataset that flooded and did not flood. Grid squares that did not flood (0) have a very low predicated probability of flooding, the predicted probability for flooding is below 0.05 for almost all grid squares. For grid squares in the test dataset that flooded the predicted probability ranges significantly, but peaks around 0.12. The predicted probability of flooding is below 0.5 for the majority of flooded grid squares, indicating that a 0.5 threshold may not be optimal. 
+
+```{r plot_preds}
+testProbs <- data.frame(obs = as.factor(floodTest$in_id),
+                        pred = classProbs)
+
+ggplot(testProbs, aes(x = pred, fill=as.factor(obs))) + 
+  geom_density() +
+  facet_grid(obs ~ .,scales = 'free') + 
+  xlab("Probability") +
+  ylab("Frequency")+
+  geom_vline(xintercept = .5) +
+  scale_fill_manual(values = c("dark blue", "dark green"),
+                      labels = c("Not flooded","flooded"),
+                      name = "")+
+  theme_bw()
+```
+   
+The chart below shows the receiver operating characteristic curve (ROC) for our model. The ROC curve plots the false positive fraction (i.e: percent of flooded grid squares incorrectly predicted) and True positive fraction (i.e: percent of flooded grid squares correctly predicted) at fifty different thresholds. 
+
+The ROC curves help show the trade offs in a logistic regression analysis. If we select a very low thresholds, the model will correctly predict more flooded grid squares (i.e: the true positive fraction will be higher). However, when a low threshold is used the model will also likely incorrectly predict many flooded grid squares as not being flooded (i.e: the false positive rate will also be high).
+
+```{r roc_curve, message = FALSE, warning = FALSE}
+
+auc <- round(auc(testProbs$obs, testProbs$pred),2)
+
+ggplot(testProbs, aes(d = as.numeric(obs), m = pred)) + 
+  geom_roc(n.cuts = 50, labels = FALSE,color='blue') + 
+  annotate("text", x = 0.1, y = 1, label=paste("AUC: ",as.character(auc)),color='blue')+
+  style_roc(theme = theme_grey) +
+  geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey')+
+  theme_bw()
+```
+
+Based on the ROC curve and the density graph above we determined that the optimal threshold is 0.12. Grid squares that the model predicts as having a flood probability higher than 0.12 are classified as flooded by our model. Grid squares that have a flood probability lower than 0.12 are classified as likely not to flood. At the 0.12 threshold, the model correctly predicts 83% of flooded grid squares (Sensitivity) and 88% of non flooded grid squares (Specificity).     
+
+```{r confusion_matrix, message = FALSE, warning = FALSE}
+testProbs$predClass <- ifelse(testProbs$pred > .12 ,1,0)
+
+matrix <- caret::confusionMatrix(reference = as.factor(testProbs$obs), 
+                       data = as.factor(testProbs$predClass), 
+                       positive = "1")
+
+matrix$table %>%   
+  data.frame() %>%
+  spread(key=Reference,value=Freq) %>%
+  rename('No_Flood' = '0', 'Flood' = '1') %>%
+  mutate(Total = No_Flood + Flood,
+         Prediction = c('No_Flood','Flood')) %>%
+  kbl() %>%
+  add_header_above(header=c(" " = 1,"Actual" = 2," " = 1)) %>%
+  kable_minimal() %>%
+  kable_styling(full_width = F)
+
+matrix$byClass %>%
+  data.frame() %>%
+  head(2) %>%
+  rename(.,Value = .) %>%
+  mutate(Value = round(Value*100,2)) %>%
+  kbl(col.names = c('Accuracy Metric','Value')) %>%
+  kable_minimal() %>%
+  kable_styling(full_width = F)
+```
+
+
+## Model Cross validation
+
+We also run a cross validation for our model. The cross validation helps us understand if the model is generalizable to different data. A cross validation involves running the model multiple times while changing the data points which are included in the training and test datasets. We run a 100-fold cross validation using the Calgary data and compare the predicted outcomes to the actual outcome in each of the 100 test datasets and calculate the accuracy for each fold. 
+
+The histogram below shows a histogram of the accuracy for all fifty folds. As seen in the histogram below the model accuracy is consistent across folds, indicating that the model is generalizable.
+
+```{r k_fold, warning = FALSE, message = FALSE}
+
+ctrl <- trainControl(method = "cv", 
+                     number = 100, 
+                     p = 0.7, 
+                     savePredictions = TRUE)
+
+cvFit <- train(as.factor(in_id) ~ .,  data = grid7 %>% 
+                                                as.data.frame() %>%
+                                                select(-geometry, -ID,-fa_max), 
+               method="glm", family="binomial",
+               trControl = ctrl)
+
+ggplot(as.data.frame(cvFit$resample), aes(Accuracy)) + 
+  geom_histogram(fill='orange',color='grey90',bins=100) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(x="Accuracy",
+       y="Count")+
+  theme_bw()
+
+```
+
+
+```{r}
+
+floodtest1 <- cbind(floodTest,testProbs) %>%
+  mutate(type = case_when(obs == 0 & predClass == 0 ~ 'TN',
+                          obs == 1 & predClass == 1 ~ 'TP',
+                          obs == 1 & predClass == 0 ~ 'FN',
+                          obs == 0 & predClass == 1 ~ 'FP'))
+
+grid7 <- grid7 %>% 
+  mutate(predict = predict(floodModel, grid7, type="response"),
+         outcome = as.factor(ifelse(predict > 0.12,1,0)))
+         
+
+```
+
+The maps below show the results for predictions in the Calgary Test Set and Predictions for all of Calgary. The predictions for the test set show the location of false negatives, false positives, true negatives, and true positives. As shown, the majority of true positives are located near the river. However, there are also a large number of false positives located along the river in the Northern areas of the city and there is also a large cluster of false positives in the eastern area of the city. 
+
+```{r}
+
+grid.arrange(nrow=1,
+
+ggplot()+
+  geom_sf(data=floodtest1,aes(fill=type),color='transparent')+
+  scale_fill_manual(values=c('grey50','blue','lightgreen','purple'),name='',labels=c('False Negative','False Positive','True Negative','True Positive'))+
+  theme_void()+
+  ggtitle('Results for Calgary Test Set'),
+
+ggplot()+
+  geom_sf(data=grid7,aes(fill=outcome),color='transparent')+
+  scale_fill_manual(values=c('#fc9c9c','lightblue'),name='',labels=c('No Flood','Flood'))+
+  theme_void()+
+  ggtitle('Predictions for Calgary')
+)
+
+```
+
+# Denver Feature Engineering
+
+Next we build a fishnet for the city of Denver. The fishnet includes the same variables as the Calgary fishnet and is also the same size as the Calgary fishnet. 
+
+## Denver Elevation and Slope
+
+```{r denver_slope, message=FALSE, results='hide', warning=FALSE}
+
+dem_1 <- rast("Data/denver/n39_w105_1arc_v3.tif")
+
+dem_2 <- rast("Data/denver/n39_w106_1arc_v32.tif")
+
+merg_dem <- terra::merge(dem_1,dem_2)
+
+merg_dem <- project(merg_dem, "EPSG:6427")
+
+
+denver_bound <-
+  st_read("Data/denver/county_boundary") %>%
+  st_transform(crs = "EPSG:6427")
+ 
+
+dem_crop <- crop(merg_dem, denver_bound)
+# 'mask' out the values outside denver
+denver_dem <- mask(dem_crop, denver_bound)
+
+
+denver_slope <- terrain(denver_dem, v="slope", neighbors=8, unit="degrees")  
+```
+
+## Denver Grid
+
+Make grid for Denver.
+
+```{r grid_den, warning=FALSE}
+
+grid_den <- st_make_grid(denver_bound,100,square=TRUE) %>%
+  st_sf() %>%
+  mutate(ID = row_number())
+
+# Get just grid squares with centroid in Calgary city limits
+
+grid_den <- grid_den %>%
+  st_centroid() %>%
+  st_join(.,denver_bound,join = st_intersects,left=FALSE) %>%
+  st_drop_geometry() %>%
+  left_join(.,grid_den,by='ID') %>%
+  st_as_sf() %>%
+  mutate(ID = row_number()) %>%
+  select(ID)
+
+```
+
+## Elevation Zonal Stats
+
+Extract elevation data for each grid squares, calculate mean elevation for each.
+
+```{r}
+
+elevation_extract <- terra::extract(merg_dem,grid_den, fun='mean', na.rm=TRUE) %>%
+  rename(elevation_mean = n39_w105_1arc_v3) %>%
+  mutate(elevation = elevation_mean - min(elevation_mean))
+
+grid3_den <- cbind(grid_den,elevation_extract %>% select(elevation))
+
+```
+
+## Slope Zonal Stats
+
+Extract slope data for each grid squares, calculate mean slope for each. 
+
+```{r}
+
+
+den_slope_extract <- terra::extract(denver_slope,grid_den, fun='max', na.rm=TRUE) %>%
+  rename(slope_max = slope) 
+
+grid3_den <- cbind(grid3_den,den_slope_extract %>% select(slope_max))
+
+```
+
+## Land Cover Zonal Stats
+
+Summarize land cover data by grid square and figure out the mode land cover class for each grid square.
+
+```{r den_land_cover, warning=FALSE, results='hide'}
+#Need four land cover tiles to cover all of Calgary
+land_cover1 <- rast('Data/denver/landcover/ESA_WorldCover_10m_2020_v100_N39W105_Map.tif')
+land_cover2 <- rast('Data/denver/landcover/ESA_WorldCover_10m_2020_v100_N39W108_Map.tif')
+
+denver_land_cover <- terra::merge(land_cover1,land_cover2) #Merge together all land cover rasters that overlap Calgary
+
+denver_land_cover2 <- crop(denver_land_cover , denver_bound %>% st_transform('EPSG:4326')) #Crop Raster to Calgary
+
+grid4_den <- grid3_den %>% st_transform('EPSG:4326') #Project grid into WGS1984 so that I do not have to project the raster
+
+mode <- function(class){
+  which.max(tabulate(class))
+}
+
+# Extract raster values within each polygon and determine the most common raster value
+land_cover_values <- extract(denver_land_cover2, grid4_den) %>%
+  rename(landcover = ESA_WorldCover_10m_2020_v100_N39W105_Map) %>%
+  group_by(ID) %>% summarise(landcover_mode = mode(landcover)) %>%
+  ungroup() %>%
+  select(landcover_mode)
+
+grid5_den <- cbind(grid4_den,land_cover_values) %>% 
+  st_transform('EPSG:6427') %>%
+  mutate(landcover_mode = as.factor(landcover_mode))
+
+
+```
+
+## Distance to Water
+
+Calculate distance to water for each grid square. The Denver data includes seperate streams and lakes data, we calculated the distance from each grid square to the nearest lake and the nearest stream and then took the distance which was lowest as the distance to water. 
+
+```{r den_water, warning=FALSE, results='hide'}
+
+lakes_ponds <- st_read("Data/denver/lakes_and_ponds/") %>%
+  st_transform("EPSG:6427") 
+streams <- st_read("Data/denver/streams/") %>%
+  st_transform("EPSG:6427") 
+
+
+centroid <- grid5_den %>%
+  st_centroid()
+
+nearest_feat <- st_nearest_feature(centroid,lakes_ponds)
+
+grid5_den$lakes_ponds_dist <- as.double(st_distance(centroid, lakes_ponds[nearest_feat,], by_element=TRUE))
+
+nearest_feat_streams <- st_nearest_feature(centroid,streams)
+
+grid5_den$streams_dist <- as.double(st_distance(centroid, streams[nearest_feat_streams,], by_element=TRUE))
+
+grid5_den$water_dist <- pmin(grid5_den$lakes_ponds_dist, grid5_den$streams_dist)
+
+grid5_den <- grid5_den %>% select(-streams_dist,-lakes_ponds_dist)
+
+```
+
+## Flow Accumilation
+
+Summarize flow accumulation by grid square - use max flow accumulation for each grid square. Flow accumulation was calculated using ArcGIS Pro.
+
+```{r dem_fa}
+
+denver_fa <- rast('Data/denver/denver_flow_accumilation.tif') 
+
+denver_fa <- project(denver_fa,'EPSG:6427')
+
+fa_extract <- terra::extract(denver_fa,grid5_den, fun='max', na.rm=TRUE) %>%
+  rename(fa_max = denver_flow_accumilation) 
+
+grid6_den <- cbind(grid5_den,fa_extract %>% select(fa_max))
+
+grid6_den$fa_log <- log(grid6_den$fa_max + 1)
+
+```
+
+## Make Predictions for Denver
+
+```{r denver_prediction}
+
+grid6_den <- grid6_den %>%
+  mutate(prediction = predict(floodModel,grid6_den, type="response"),
+  outcome = as.factor(ifelse(prediction > 0.12, 1,0)))
+
+```
+
+
+```{r fig.width=11,fig.height=4}
+
+ggplot()+
+  geom_sf(data=grid6_den,aes(fill=outcome),color='transparent')+
+  scale_fill_manual(values=c('#fc9c9c','lightblue'),name='',labels=c('No Flood','Flood'))+
+  theme_void()+
+  ggtitle('Predictions for Denver')
+  
+```
